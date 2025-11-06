@@ -1,142 +1,269 @@
-import os
 import asyncio
+import os
+import warnings
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+# Suppress all deprecation warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+
+import gradio as gr
+from fastmcp import Client
+from langchain.tools import StructuredTool
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.prebuilt import create_react_agent
-from langchain.tools import StructuredTool
-from fastmcp import Client
-import json
 from pydantic import BaseModel, Field, create_model
-from typing import Optional, Any, Dict
+ 
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
+if GOOGLE_API_KEY:
+    os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
 
-os.environ["GOOGLE_API_KEY"] = os.environ.get("GOOGLE_API_KEY")
 
-
-def json_schema_to_pydantic(schema: Dict[str, Any], model_name: str) -> type[BaseModel]:
+def json_schema_to_pydantic(schema: Dict[str, Any], model_name: str) -> Optional[type[BaseModel]]:
     """
-    Convert a JSON schema to a Pydantic model.
-    
+    Convert a JSON schema dictionary to a Pydantic model.
+
     Parameters:
-    schema (Dict[str, Any]): The JSON schema dictionary.
-    model_name (str): The name for the generated Pydantic model.
-    
+        schema: JSON schema describing expected arguments.
+        model_name: Name for the generated Pydantic model.
+
     Returns:
-    type[BaseModel]: A dynamically created Pydantic model class.
+        A dynamically created Pydantic model class or None if schema is invalid.
     """
-    if not schema or 'properties' not in schema:
+    if not schema or "properties" not in schema:
         return None
-    
-    fields = {}
-    properties = schema.get('properties', {})
-    required = schema.get('required', [])
-    
+
+    fields: Dict[str, Tuple[Any, Any]] = {}
+    properties = schema.get("properties", {})
+    required = set(schema.get("required", []))
+
     for prop_name, prop_info in properties.items():
-        field_type = Any
+        field_type: Any = Any
         field_default = ...
-        
-        # Map JSON schema types to Python types
-        prop_type = prop_info.get('type')
-        if prop_type == 'string':
+
+        prop_type = prop_info.get("type")
+        if prop_type == "string":
             field_type = str
-        elif prop_type == 'integer':
+        elif prop_type == "integer":
             field_type = int
-        elif prop_type == 'number':
+        elif prop_type == "number":
             field_type = float
-        elif prop_type == 'boolean':
+        elif prop_type == "boolean":
             field_type = bool
-        elif prop_type == 'array':
+        elif prop_type == "array":
             field_type = list
-        elif prop_type == 'object':
+        elif prop_type == "object":
             field_type = dict
-        
-        # Handle optional fields
+
         if prop_name not in required:
-            field_type = Optional[field_type]
+            field_type = Optional[field_type]  # type: ignore[valid-type]
             field_default = None
-        
-        # Add field with description
-        description = prop_info.get('description', '')
+
+        description = prop_info.get("description", "")
         fields[prop_name] = (field_type, Field(default=field_default, description=description))
-    
+
     return create_model(model_name, **fields)
 
 
-def create_tool_from_mcp(tool_info, client):
+def create_tool_from_mcp(tool_info, client) -> StructuredTool:
     """
-    Convert MCP tool to LangChain tool with proper schema.
-    
-    Parameters:
-    tool_info: The MCP tool information object.
-    client: The FastMCP client instance.
-    
-    Returns:
-    StructuredTool: A LangChain StructuredTool instance.
+    Convert an MCP tool description into a LangChain StructuredTool.
     """
+
     async def tool_func(**kwargs):
         result = await client.call_tool(tool_info.name, kwargs)
-        # Extract text content from result
-        if result.content and len(result.content) > 0:
-            content = result.content[0]
-            if hasattr(content, 'text'):
-                return content.text
+        if result.content:
+            first_item = result.content[0]
+            text = getattr(first_item, "text", None)
+            if text:
+                return text
         return str(result)
-    
-    # Convert the input schema to a Pydantic model
+
     args_schema = None
-    if hasattr(tool_info, 'inputSchema') and tool_info.inputSchema:
+    if getattr(tool_info, "inputSchema", None):
         model_name = f"{tool_info.name.replace('-', '_').title()}Input"
         args_schema = json_schema_to_pydantic(tool_info.inputSchema, model_name)
-    
+
     return StructuredTool.from_function(
         coroutine=tool_func,
-        name=tool_info.name.replace("-", "_"),  # LangChain requires valid Python identifiers
-        description=tool_info.description or "No description",
-        args_schema=args_schema
+        name=tool_info.name.replace("-", "_"),
+        description=(tool_info.description or "No description provided."),
+        args_schema=args_schema,
     )
 
 
-async def main():
-    # Connect to the Adzuna MCP server using FastMCP Client
-    server_url = "https://adzuna-mcp-server-236255620233.us-central1.run.app/mcp"
-    
-    print(f"Connecting to Adzuna MCP server at {server_url}...")
-    
-    async with Client(server_url) as client:
-        print("✓ Connected!")
+class AdzunaMCPAgent:
+    """
+    Maintain a single LangGraph agent that communicates with the Adzuna MCP server.
+    """
+
+    def __init__(self, server_url: str, model_name: str = "gemini-2.5-flash"):
+        self.server_url = server_url
+        self.model_name = model_name
+        self._client_cm: Optional[Client] = None
+        self._client: Optional[Any] = None
+        self._agent = None
+        self._lock = asyncio.Lock()
+        self._tool_metadata: List[Tuple[str, str]] = []
+
+    async def _ensure_agent(self):
+        if self._agent is not None:
+            return self._agent
+
+        async with self._lock:
+            if self._agent is not None:
+                return self._agent
+
+            if not os.environ.get("GOOGLE_API_KEY"):
+                raise RuntimeError("GOOGLE_API_KEY environment variable is not set.")
+
+            client_cm = Client(self.server_url)
+            client = await client_cm.__aenter__()
+            tools = await client.list_tools()
+
+            self._tool_metadata = [
+                (tool.name, tool.description or "No description available.") for tool in tools
+            ]
+
+            langchain_tools = [create_tool_from_mcp(tool, client) for tool in tools]
+            model = ChatGoogleGenerativeAI(model=self.model_name)
+            self._agent = create_react_agent(model, langchain_tools)
+
+            self._client_cm = client_cm
+            self._client = client
+
+        return self._agent
+
+    async def ainvoke(self, prompt: str, history: Optional[Sequence[Tuple[str, str]]] = None) -> str:
+        prompt = prompt.strip()
+        if not prompt:
+            raise ValueError("Prompt cannot be empty.")
+
+        agent = await self._ensure_agent()
+
+        messages: List[Any] = []
+        for user_message, assistant_message in history or []:
+            if user_message:
+                messages.append(HumanMessage(content=user_message))
+            if assistant_message:
+                messages.append(AIMessage(content=assistant_message))
+        messages.append(HumanMessage(content=prompt))
+
+        result = await agent.ainvoke({"messages": messages})
+
+        messages_output = result.get("messages") if isinstance(result, dict) else None
+        if not messages_output:
+            return "The agent returned an empty response."
+
+        final_message = messages_output[-1]
+        content = getattr(final_message, "content", None)
+
+        if isinstance(content, str):
+            return content.strip() or "The agent returned an empty response."
+
+        if isinstance(content, list):
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict) and "text" in item:
+                    text_parts.append(item["text"])
+            if text_parts:
+                return "\n".join(text_parts)
+
+        return str(final_message)
+
+    async def describe_tools(self) -> str:
+        try:
+            await self._ensure_agent()
+        except Exception as exc:
+            return f"Warning: Unable to load MCP tools: {exc}"
+
+        if not self._tool_metadata:
+            return "Warning: No tools were returned by the Adzuna MCP server."
+
+        lines = "\n".join(f"- **{name}**: {description}" for name, description in self._tool_metadata)
+        return f"### MCP Tools from Adzuna\n{lines}"
+
+    async def aclose(self):
+        if self._client_cm is not None:
+            await self._client_cm.__aexit__(None, None, None)
+            self._client_cm = None
+            self._client = None
+            self._agent = None
+
+
+def normalize_history(history: Optional[Sequence[Any]]) -> List[Tuple[str, str]]:
+    """
+    Convert Gradio chat history into a list of (user, assistant) tuples.
+    """
+    normalized: List[Tuple[str, str]] = []
+    if not history:
+        return normalized
+
+    for turn in history:
+        user_message = ""
+        assistant_message = ""
+
+        if isinstance(turn, dict):
+            user_message = str(turn.get("user") or turn.get("input") or "")
+            assistant_message = str(turn.get("assistant") or turn.get("output") or "")
+        elif isinstance(turn, (list, tuple)) and len(turn) >= 2:
+            user_message = str(turn[0] or "")
+            assistant_message = str(turn[1] or "")
+        else:
+            continue
+
+        normalized.append((user_message, assistant_message))
+
+    return normalized
+
+
+def launch_app():
+    server_url = os.environ.get(
+        "ADZUNA_MCP_SERVER_URL",
+        "https://adzuna-mcp-server-236255620233.us-central1.run.app/mcp",
+    )
+    agent = AdzunaMCPAgent(server_url=server_url)
+
+    async def respond(message: str | dict, history: Optional[Sequence[Any]]):
+        # Handle both message formats
+        if isinstance(message, dict):
+            text = (message.get("text", "") or "").strip()
+        else:
+            text = (message or "").strip()
         
-        # List available tools
-        tools = await client.list_tools()
-        print(f"✓ Found {len(tools)} tools\n")
-        
-        print("Available tools:")
-        for tool in tools:
-            print(f"  - {tool.name}")
-        print()
-        
-        # Convert MCP tools to LangChain-compatible format
-        langchain_tools = [create_tool_from_mcp(tool, client) for tool in tools]
-        
-        # Initialize the language model and agent
-        model = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
-        agent = create_react_agent(model, langchain_tools)
+        if not text:
+            return "Please enter a question about jobs."
 
-        print("Agent ready!\n")
+        normalized = normalize_history(history)
+        try:
+            return await agent.ainvoke(text, normalized)
+        except Exception as exc:
+            print(f"[Gradio] Error while processing request: {exc}")
+            return f"Warning: {exc}"
 
-        # Example 1: Search for data science jobs
-        print("=== Example 1: Searching for data science jobs ===")
-        resp1 = await agent.ainvoke({
-            "messages": "Search for data science jobs in Singapore. Show me the top 3 results."
-        })
-        print("Response:", resp1["messages"][-1].content)
+    async def load_tools():
+        return await agent.describe_tools()
 
-        print("\n" + "="*60 + "\n")
+    with gr.Blocks(title="Adzuna MCP Job Assistant") as demo:
+        gr.ChatInterface(
+            fn=respond,
+            type="messages",
+            submit_btn="Ask",
+            description=(
+                "## Adzuna MCP Job Assistant\n"
+                "Ask about current job openings or hiring trends. "
+                "The assistant uses LangGraph with the Adzuna MCP tools.\n\n"
+                "Try prompts like:\n"
+                "- Search for data science jobs in Singapore\n"
+                "- Which companies are hiring in Singapore?\n"
+                "- Summarize the top job categories in Singapore"
+            ),
+        )
 
-        # Example 2: Get top hiring companies
-        print("=== Example 2: Top companies hiring ===")
-        resp2 = await agent.ainvoke({
-            "messages": "What are the top companies hiring in Singapore?"
-        })
-        print("Response:", resp2["messages"][-1].content)
+    demo.queue()
+    demo.launch()
 
 
-# Run the async function
-asyncio.run(main())
+if __name__ == "__main__":
+    launch_app()
