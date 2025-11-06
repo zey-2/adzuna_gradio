@@ -354,7 +354,46 @@ def launch_app():
     async def load_tools():
         return await agent.describe_tools()
 
-    with gr.Blocks(title="Adzuna MCP Job Assistant") as demo:
+    # Custom CSS for better table formatting
+    custom_css = """
+    .message-wrap table {
+        table-layout: fixed;
+        width: 100%;
+    }
+    .message-wrap table th,
+    .message-wrap table td {
+        word-wrap: break-word;
+        overflow-wrap: break-word;
+        padding: 8px;
+        vertical-align: top;
+    }
+    .message-wrap table th:nth-child(1),
+    .message-wrap table td:nth-child(1) {
+        width: 18%;  /* Job Title */
+    }
+    .message-wrap table th:nth-child(2),
+    .message-wrap table td:nth-child(2) {
+        width: 15%;  /* Company */
+    }
+    .message-wrap table th:nth-child(3),
+    .message-wrap table td:nth-child(3) {
+        width: 12%;  /* Location */
+    }
+    .message-wrap table th:nth-child(4),
+    .message-wrap table td:nth-child(4) {
+        width: 10%;  /* Posted */
+    }
+    .message-wrap table th:nth-child(5),
+    .message-wrap table td:nth-child(5) {
+        width: 35%;  /* Description */
+    }
+    .message-wrap table th:nth-child(6),
+    .message-wrap table td:nth-child(6) {
+        width: 10%;  /* Link */
+    }
+    """
+
+    with gr.Blocks(title="Adzuna MCP Job Assistant", css=custom_css) as demo:
         gr.ChatInterface(
             fn=respond,
             type="messages",
