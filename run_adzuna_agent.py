@@ -1,11 +1,14 @@
-import asyncio
 import os
+from dotenv import load_dotenv
+import asyncio
 import warnings
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # Suppress all warnings (including runtime warnings from dependencies)
+os.environ["PYTHONWARNINGS"] = "ignore"
 warnings.filterwarnings("ignore")
 os.environ["PYTHONWARNINGS"] = "ignore"
+load_dotenv()
 
 import gradio as gr
 from fastmcp import Client
