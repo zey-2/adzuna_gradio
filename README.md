@@ -3,6 +3,7 @@
 Interactive Gradio application that wraps a LangGraph agent connected to the Adzuna Model Context Protocol (MCP) server. It lets you search live job listings, summarize results, and explore hiring trends through a conversational interface backed by Google Gemini.
 
 ## Features
+
 - LangGraph-based agent that streams conversations through LangChain.
 - MCP client integration (via `fastmcp`) for the Adzuna job search tools.
 - Automatic formatting of job results into readable tables with links.
@@ -10,24 +11,29 @@ Interactive Gradio application that wraps a LangGraph agent connected to the Adz
 - Environmental configuration for Google Generative AI and Adzuna MCP endpoints.
 
 ## Requirements
+
 - Python 3.12 (see `environment.yml` for the exact stack)
 - Google API key with access to the Gemini model family
 - Network access to the Adzuna MCP server
 
 ## Setup
+
 1. **Clone the repository**
+
    ```bash
    git clone <repo-url>
    cd adzuna_gradio
    ```
 
 2. **Create the environment (recommended with Conda)**
+
    ```bash
    conda env create -f environment.yml
    conda activate mcp-env
    ```
 
    Or install manually with `pip` inside a Python 3.12 virtual environment:
+
    ```bash
    python -m venv .venv
    .venv\Scripts\activate  # Windows
@@ -55,24 +61,40 @@ Interactive Gradio application that wraps a LangGraph agent connected to the Adz
    If you skip the MCP URL it defaults to `https://adzuna-mcp-server-236255620233.us-central1.run.app/mcp`.
 
 ## Running the App
+
+### Local Development
+
 ```bash
 python run_adzuna_agent.py
 ```
 
 Gradio will print a local URL (and optionally a public link) in the console. Open it in the browser to start chatting with the agent.
 
+### Deploy to Hugging Face Spaces
+
+Deploy your app for free with automatic HTTPS and no server management:
+
+- **Quick Start**: See `DEPLOYMENT.md` for 5-minute deployment guide
+- **Free Hosting**: No credit card required
+- **Easy Updates**: Push changes via Git or web interface
+
+See full deployment instructions in `DEPLOYMENT.md`.
+
 ## Using the Assistant
+
 - Ask for roles (e.g., “Find data science jobs in Singapore.”).
 - Drill into locations, companies, or categories.
 - Request summaries of the current listings or highlight top employers.
 - The agent automatically paginates results; ask follow-up questions for more.
 
 ## Development Notes
+
 - `run_adzuna_agent.py` contains the LangGraph agent, tool bootstrapping, and Gradio UI.
 - MCP tools are discovered dynamically from the Adzuna server at startup and cached on the agent instance.
 - Warnings are disabled intentionally to keep the Gradio logs readable during demos.
 
 ## Troubleshooting
+
 - **No job results**: confirm the MCP endpoint is reachable and your IP is allow-listed (if applicable).
 - **Authentication errors**: verify `GOOGLE_API_KEY` is set in the same shell session running the app.
 - **Slow responses**: Gemini requests depend on network latency; consider reducing `results_per_page` in your prompts.

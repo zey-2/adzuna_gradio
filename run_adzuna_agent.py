@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 # Suppress all warnings (including runtime warnings from dependencies)
 os.environ["PYTHONWARNINGS"] = "ignore"
 warnings.filterwarnings("ignore")
+warnings.filterwarnings("ignore", message="'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated", category=DeprecationWarning)
 os.environ["PYTHONWARNINGS"] = "ignore"
 load_dotenv()
 
@@ -222,23 +223,30 @@ This GPT should only return jobs that exist in Adzuna's live database and must u
             if not os.environ.get("GOOGLE_API_KEY"):
                 raise RuntimeError("GOOGLE_API_KEY environment variable is not set.")
 
-            client_cm = Client(self.server_url)
-            client = await client_cm.__aenter__()
-            tools = await client.list_tools()
+            try:
+                client_cm = Client(self.server_url)
+                client = await client_cm.__aenter__()
+                tools = await client.list_tools()
 
-            self._tool_metadata = [
-                (tool.name, tool.description or "No description available.") for tool in tools
-            ]
+                self._tool_metadata = [
+                    (tool.name, tool.description or "No description available.") for tool in tools
+                ]
 
-            langchain_tools = [create_tool_from_mcp(tool, client) for tool in tools]
+                langchain_tools = [create_tool_from_mcp(tool, client) for tool in tools]
+                self._client_cm = client_cm
+                self._client = client
+            except Exception as e:
+                print(f"Failed to connect to MCP server at {self.server_url}: {e}")
+                print("Continuing with LLM-only agent (no MCP tools available).")
+                tools = []
+                self._tool_metadata = []
+                langchain_tools = []
+
             model = ChatGoogleGenerativeAI(model=self.model_name)
             self._agent = create_react_agent(
                 model, 
                 langchain_tools
             )
-
-            self._client_cm = client_cm
-            self._client = client
 
         return self._agent
 
@@ -413,7 +421,7 @@ def launch_app():
         )
 
     demo.queue()
-    demo.launch()
+    demo.launch(share=True)
 
 
 if __name__ == "__main__":
