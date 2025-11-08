@@ -402,13 +402,15 @@ def launch_app():
     .message-wrap table td:nth-child(6) {
         width: 10%;  /* Link */
     }
+    
+
     """
 
     with gr.Blocks(title="Adzuna MCP Job Assistant", css=custom_css) as demo:
         gr.ChatInterface(
             fn=respond,
-            type="messages",
             submit_btn="Ask",
+            chatbot=gr.Chatbot(height=600),
             description=(
                 "## Adzuna MCP Job Assistant\n"
                 "Ask about current job openings or hiring trends. "
@@ -421,7 +423,8 @@ def launch_app():
         )
 
     demo.queue()
-    demo.launch(share=True)
+    demo.launch()
+    # demo.launch(share=True)
 
 
 if __name__ == "__main__":
